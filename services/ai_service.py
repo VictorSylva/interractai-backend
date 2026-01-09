@@ -5,37 +5,32 @@ from services.prompt_service import prompt_service
 
 logger = logging.getLogger(__name__)
 
-# Provider Configuration
+# Provider Configuration: OpenRouter Only (DeepSeek)
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-if OPENROUTER_API_KEY:
-    API_URL = "https://openrouter.ai/api/v1/chat/completions"
-    MODEL_NAME = "deepseek/deepseek-chat"
-    API_KEY = OPENROUTER_API_KEY
-    HEADERS_EXTRA = {
-        "HTTP-Referer": "https://interact.com", 
-        "X-Title": "Interact AI Platform",
-    }
-    logger.info("Using Provider: OpenRouter (DeepSeek)")
-elif OPENAI_API_KEY:
-    API_URL = "https://api.openai.com/v1/chat/completions"
-    MODEL_NAME = "gpt-4o"
-    API_KEY = OPENAI_API_KEY
-    HEADERS_EXTRA = {}
-    logger.info("Using Provider: OpenAI (GPT-4o)")
-else:
+API_URL = "https://openrouter.ai/api/v1/chat/completions"
+MODEL_NAME = "deepseek/deepseek-chat"
+    
+if not OPENROUTER_API_KEY:
+    logger.error("OPENROUTER_API_KEY is not set. AI Service will fail.")
     API_KEY = None
-    logger.error("No AI API Key found (checked OPENROUTER_API_KEY and OPENAI_API_KEY).")
+else:
+    API_KEY = OPENROUTER_API_KEY
+    logger.info("Using Provider: OpenRouter (DeepSeek)")
+
+HEADERS_EXTRA = {
+    "HTTP-Referer": "https://interact.com", 
+    "X-Title": "Interact AI Platform",
+}
 
 from services.db_service import log_prompt_execution
 
 async def generate_response(user_message: str, conversation_history: list = None, user_id: str = "unknown", system_instruction: str = None, business_id: str = None):
     """
-    Generates a response from AI Provider.
+    Generates a response from DeepSeek via OpenRouter.
     """
     if not API_KEY:
-        return "Error: AI service not configured."
+        return "Error: AI Service not configured. Missing OPENROUTER_API_KEY."
     
     headers = {
         "Authorization": f"Bearer {API_KEY}",
