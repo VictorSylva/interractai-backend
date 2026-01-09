@@ -1,0 +1,82 @@
+{
+  "booking": [
+    "book",
+    "appointment",
+    "schedule",
+    "reservation",
+    "reserve",
+    "slot",
+    "visit",
+    "booking",
+    "visit"
+  ],
+  "enquiry": [
+    "enquiry",
+    "inquiry",
+    "question",
+    "info",
+    "information",
+    "details",
+    "tell me",
+    "interested",
+    "services",
+    "how do you",
+    "what do you",
+    "enquire",
+    "project",
+    "renovation",
+    "build",
+    "construction"
+  ],
+  "pricing": [
+    "cost",
+    "price",
+    "pricing",
+    "expensive",
+    "cheap",
+    "plan",
+    "subscription",
+    "how much",
+    "budget",
+    "quote"
+  ],
+  "support": [
+    "help",
+    "issue",
+    "bug",
+    "error",
+    "problem",
+    "broken",
+    "fail",
+    "support",
+    "not working"
+  ],
+  "greeting": ["hello", "hi", "hey", "start", "morning", "evening"],
+  "features": ["feature", "can you", "does it", "capability", "function"],
+  "integration": ["integrate", "connect", "whatsapp", "api", "webhook"],
+  "complaint": [
+    "complaint",
+    "unhappy",
+    "angry",
+    "dissatisfied",
+    "refund",
+    "worst",
+    "didnt like",
+    "not happy",
+    "bad",
+    "poor",
+    "standard"
+  ],
+  "feedback": ["feedback", "suggestion", "improve", "review", "opinion"],
+  "human": [
+    "agent",
+    "human",
+    "person",
+    "representative",
+    "talk to",
+    "someone",
+    "operator",
+    "call",
+    "phone"
+  ]
+}

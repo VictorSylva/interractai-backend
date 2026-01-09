@@ -1,0 +1,26 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+httpx
+pydantic
+openai
+python-multipart
+
+# Database
+sqlalchemy
+alembic
+asyncpg
+psycopg2-binary
+
+# Task Queue
+celery[redis]
+redis
+
+# Tools
+beautifulsoup4
+requests
+python-docx
+
+# Auth
+passlib[bcrypt]
+httpx

@@ -1,0 +1,14 @@
+Q: How much does it cost?
+A: We offer a free tier for getting started, and paid plans starting at $19/month for advanced automation features.
+
+Q: Can I connect my own WhatsApp number?
+A: Yes, you can connect your existing WhatsApp Business API number easily through our dashboard.
+
+Q: Do you support other languages?
+A: Our AI understands and speaks over 95 languages automatically.
+
+Q: How do I install the web widget?
+A: Simply copy the snippet code from your dashboard settings and paste it into your website's HTML header.
+
+Q: Is my data safe?
+A: Yes, we use enterprise-grade encryption and follow strict data privacy policies.
