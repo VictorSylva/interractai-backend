@@ -5,35 +5,42 @@ from services.prompt_service import prompt_service
 
 logger = logging.getLogger(__name__)
 
-# API Key fetched at runtime
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL_NAME = "deepseek/deepseek-chat" # or deepseek/deepseek-r1
+# Provider Configuration
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+if OPENROUTER_API_KEY:
+    API_URL = "https://openrouter.ai/api/v1/chat/completions"
+    MODEL_NAME = "deepseek/deepseek-chat"
+    API_KEY = OPENROUTER_API_KEY
+    HEADERS_EXTRA = {
+        "HTTP-Referer": "https://interact.com", 
+        "X-Title": "Interact AI Platform",
+    }
+    logger.info("Using Provider: OpenRouter (DeepSeek)")
+elif OPENAI_API_KEY:
+    API_URL = "https://api.openai.com/v1/chat/completions"
+    MODEL_NAME = "gpt-4o"
+    API_KEY = OPENAI_API_KEY
+    HEADERS_EXTRA = {}
+    logger.info("Using Provider: OpenAI (GPT-4o)")
+else:
+    API_KEY = None
+    logger.error("No AI API Key found (checked OPENROUTER_API_KEY and OPENAI_API_KEY).")
 
 from services.db_service import log_prompt_execution
 
 async def generate_response(user_message: str, conversation_history: list = None, user_id: str = "unknown", system_instruction: str = None, business_id: str = None):
     """
-    Generates a response from DeepSeek via OpenRouter.
+    Generates a response from AI Provider.
     """
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    # ... check key ...
-    if not api_key:
-         # Lazy load
-         from dotenv import load_dotenv
-         load_dotenv()
-         api_key = os.getenv("OPENROUTER_API_KEY")
-
-    if not api_key:
-        logger.error("OPENROUTER_API_KEY is not set.")
+    if not API_KEY:
         return "Error: AI service not configured."
     
-    print(f"DEBUG: Using API Key with length {len(api_key)}")
-
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://interact.com", 
-        "X-Title": "Interact AI Platform",
+        **HEADERS_EXTRA
     }
 
     messages = prompt_service.construct_messages(user_message, conversation_history, system_instruction)
@@ -51,7 +58,7 @@ async def generate_response(user_message: str, conversation_history: list = None
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(OPENROUTER_URL, headers=headers, json=payload, timeout=30.0)
+            response = await client.post(API_URL, headers=headers, json=payload, timeout=30.0)
             response.raise_for_status()
             data = response.json()
             
@@ -68,8 +75,6 @@ async def generate_response(user_message: str, conversation_history: list = None
                 return "I'm having trouble processing that right now."
                 
     except Exception as e:
-        logger.error(f"Error calling OpenRouter: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Error calling AI Provider: {e}")
         # Fallback to Mock AI for Demo Mode if API fails
         return f"I'm in Demo Mode! Error: {e}"
