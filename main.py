@@ -269,10 +269,9 @@ async def web_chat(body: WebMessage):
 
 @app.get("/api/web-chat/history")
 async def get_chat_history_endpoint(business_id: str, user_id: str):
-    # If business_id is a UUID, we should keep it. If it's an email, we keep it.
-    # The store_message logic used the body.business_id (which might be email).
-    # We must be consistent here.
-    history = await get_chat_history(business_id, user_id, limit=50)
+    from services.db_service import resolve_business_id
+    real_bid = await resolve_business_id(business_id)
+    history = await get_chat_history(real_bid, user_id, limit=50)
     # Return in chronological order (Oldest -> Newest) which get_chat_history already does
     return {"messages": history}
 
