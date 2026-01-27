@@ -93,6 +93,7 @@ async def startup_event():
                 # One-time patches for existing tables (PostgreSQL specific)
                 await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token VARCHAR"))
                 await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expiry TIMESTAMP"))
+                await conn.execute(text("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'active'"))
                 await conn.execute(text("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS plan_name VARCHAR DEFAULT 'starter'"))
                 await conn.execute(text("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS trial_start_at TIMESTAMP"))
                 await conn.execute(text("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS trial_end_at TIMESTAMP"))
@@ -162,29 +163,31 @@ class ResetPasswordRequest(BaseModel):
 
 @app.post("/api/auth/register")
 async def register_endpoint(body: RegisterRequest):
-    session = await get_db().__anext__()
-    try:
-        result = await register_business(session, body.email, body.password, body.business_name)
-        return {"status": "success", "data": result}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print(e)
-        raise HTTPException(status_code=500, detail="Registration failed")
+    from database.session import AsyncSessionLocal
+    async with AsyncSessionLocal() as session:
+        try:
+            result = await register_business(session, body.email, body.password, body.business_name)
+            return {"status": "success", "data": result}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"Registration error: {e}")
+            raise HTTPException(status_code=500, detail="Registration failed")
 
 @app.post("/api/auth/login")
 async def login_endpoint(body: LoginRequest):
-    try:
-        session = await get_db().__anext__()
-        user = await authenticate_user(session, body.email, body.password)
-    except ValueError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except Exception as e:
-        logger.error(f"Login error: {e}")
-        raise HTTPException(status_code=500, detail="Database connection error. Please check backend logs.")
-    
-    if not user:
-         raise HTTPException(status_code=401, detail="Invalid credentials")
+    from database.session import AsyncSessionLocal
+    async with AsyncSessionLocal() as session:
+        try:
+            user = await authenticate_user(session, body.email, body.password)
+        except ValueError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        except Exception as e:
+            logger.error(f"Login error: {e}")
+            raise HTTPException(status_code=500, detail="Database connection error. Please check backend logs.")
+        
+        if not user:
+             raise HTTPException(status_code=401, detail="Invalid credentials")
     
     return {
         "status": "success",
@@ -199,22 +202,24 @@ async def login_endpoint(body: LoginRequest):
 
 @app.post("/api/auth/forgot-password")
 async def forgot_password_endpoint(body: ForgotPasswordRequest):
-    session = await get_db().__anext__()
-    # Note: For security, usually return success even if email doesn't exist
-    # to prevent user enumeration. But for MVP let's be explicit.
-    success = await create_reset_token(session, body.email)
-    if not success:
-        # We'll still say success for security if desired, but for now:
-        raise HTTPException(status_code=404, detail="Email not found")
-    return {"status": "success", "message": "Reset link sent"}
+    from database.session import AsyncSessionLocal
+    async with AsyncSessionLocal() as session:
+        # Note: For security, usually return success even if email doesn't exist
+        # to prevent user enumeration. But for MVP let's be explicit.
+        success = await create_reset_token(session, body.email)
+        if not success:
+            # We'll still say success for security if desired, but for now:
+            raise HTTPException(status_code=404, detail="Email not found")
+        return {"status": "success", "message": "Reset link sent"}
 
 @app.post("/api/auth/reset-password")
 async def reset_password_endpoint(body: ResetPasswordRequest):
-    session = await get_db().__anext__()
-    success = await reset_password(session, body.token, body.new_password)
-    if not success:
-        raise HTTPException(status_code=400, detail="Invalid or expired token")
-    return {"status": "success", "message": "Password updated"}
+    from database.session import AsyncSessionLocal
+    async with AsyncSessionLocal() as session:
+        success = await reset_password(session, body.token, body.new_password)
+        if not success:
+            raise HTTPException(status_code=400, detail="Invalid or expired token")
+        return {"status": "success", "message": "Password updated"}
 
 # --- Web Chat & Automation ---
 
