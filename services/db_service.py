@@ -4,8 +4,9 @@ from sqlalchemy import select, update, delete, desc
 from sqlalchemy.orm import selectinload
 from database.session import AsyncSessionLocal
 from database.models.chat import Conversation, Message
-from database.models.general import BusinessSettings, KnowledgeDoc, User, Business
+from database.models.general import BusinessSettings, KnowledgeDoc, User, Business, BusinessWhatsAppConfig
 from database.models.crm import Lead, Ticket # Assuming Ticket exists or we map to it
+from backend.utils.encryption import encrypt_token, decrypt_token
 
 logger = logging.getLogger(__name__)
 
@@ -85,57 +86,127 @@ async def store_message(business_id: str, user_id: str, text: str, sender: str, 
             logger.error(f"Error storing message: {e}")
             await session.rollback()
 
-async def get_analytics_summary(business_id: str):
+async def get_analytics_summary(business_id: str, days: int = 30):
     """
-    Aggregates stats for the dashboard.
+    Aggregates advanced stats for the sales intelligence dashboard.
     """
     async with AsyncSessionLocal() as session:
         try:
-            # Total Conversations
-            result = await session.execute(select(Conversation).where(Conversation.business_id == business_id))
-            conversations = result.scalars().all()
+            from datetime import timedelta
+            now = datetime.utcnow()
+            start_date = now - timedelta(days=days)
+
+            # 1. Base Data Fetching
+            # Conversations
+            convo_res = await session.execute(select(Conversation).where(Conversation.business_id == business_id))
+            conversations = convo_res.scalars().all()
+            
+            # Messages (Filtered by date for volume trends, but all time for some metrics)
+            msg_res = await session.execute(select(Message).where(Message.business_id == business_id))
+            all_messages = msg_res.scalars().all()
+            
+            # Leads
+            lead_res = await session.execute(select(Lead).where(Lead.business_id == business_id))
+            leads = lead_res.scalars().all()
+
+            # 2. Key Metrics Aggregation
             total_conversations = len(conversations)
+            total_messages = len(all_messages)
             
-            # Total Messages
-            result = await session.execute(select(Message).where(Message.business_id == business_id))
-            messages = result.scalars().all()
-            total_messages = len(messages)
+            # Lead Funnel (Funnel Visualization)
+            funnel_stages = ["new", "contacted", "qualified", "converted", "unqualified"]
+            funnel_data = {stage: 0 for stage in funnel_stages}
+            pipeline_value = 0
             
-            # Intents Distribution
+            for l in leads:
+                status = l.status.lower() if l.status else "new"
+                if status in funnel_data:
+                    funnel_data[status] += 1
+                if l.value:
+                    pipeline_value += l.value
+            
+            # Channel Breakdown & Conversion
+            channel_stats = {} # { "whatsapp": {"total": 0, "converted": 0}, "web": ... }
+            for l in leads:
+                source = l.source.lower() if l.source else "web"
+                if source not in channel_stats:
+                    channel_stats[source] = {"total": 0, "converted": 0}
+                channel_stats[source]["total"] += 1
+                if l.status == "converted":
+                    channel_stats[source]["converted"] += 1
+            
+            # AI vs Human Resolution
+            ai_messages = [m for m in all_messages if m.sender == 'bot']
+            human_messages = [m for m in all_messages if m.sender == 'agent']
+            ai_res_rate = (len(ai_messages) / total_messages * 100) if total_messages > 0 else 0
+
+            # Response Time calculation (Avg delta between customer msg and next response)
+            deltas = []
+            sorted_msgs = sorted(all_messages, key=lambda x: x.timestamp)
+            last_customer_time = None
+            
+            for m in sorted_msgs:
+                if m.sender == 'customer':
+                    last_customer_time = m.timestamp
+                elif last_customer_time and (m.sender == 'bot' or m.sender == 'agent'):
+                    delta = (m.timestamp - last_customer_time).total_seconds()
+                    deltas.append(delta)
+                    last_customer_time = None # Reset until next customer msg
+            
+            avg_response_time = sum(deltas) / len(deltas) if deltas else 0
+
+            # 3. Trends & Distributions (Reusing existing logic with some tweaks)
             from collections import Counter
             intents = [c.last_intent for c in conversations if c.last_intent]
-            intent_counts = Counter(intents)
-            intent_dist = [{"name": k, "value": v} for k, v in intent_counts.items()]
+            intent_dist = [{"name": k, "value": v} for k, v in Counter(intents).items()]
             
-            # Sentiment Analysis
             sentiments = [c.last_sentiment for c in conversations if c.last_sentiment]
-            sent_counts = Counter(sentiments)
-            sent_dist = [{"name": k, "value": v} for k, v in sent_counts.items()]
-            
-            # Volume Data (Mocked or simple grouping by Date for MVP)
-            # In real app, proper group_by query
-            volume_data = [
-                 {"name": "Mon", "messages": 120},
-                 {"name": "Tue", "messages": 200},
-                 {"name": "Wed", "messages": 150},
-                 {"name": "Thu", "messages": 80},
-                 {"name": "Fri", "messages": 70},
-                 {"name": "Sat", "messages": 110},
-                 {"name": "Sun", "messages": 130},
-            ]
+            sent_dist = [{"name": k, "value": v} for k, v in Counter(sentiments).items()]
+
+            # Volume by Day (Rolling 7 days)
+            days_order = []
+            volume_stats = []
+            for i in range(7):
+                d = (now - timedelta(days=6-i))
+                day_name = d.strftime("%a")
+                count = sum(1 for m in all_messages if m.timestamp.date() == d.date())
+                volume_stats.append({"name": day_name, "messages": count})
+
+            # Busiest Hours
+            hours_dist = Counter([m.timestamp.hour for m in all_messages if m.timestamp])
+            busiest_hours = [{"hour": f"{h:02}:00", "messages": hours_dist[h]} for h in range(24)]
 
             return {
                 "overview": {
                     "total_conversations": total_conversations,
-                    "active_users": total_conversations, # Proxy
+                    "active_users": len(set(c.id for c in conversations)),
                     "total_messages": total_messages,
-                    "avg_response_time": "1.2s" # Mock
+                    "avg_response_time": f"{int(avg_response_time)}s" if avg_response_time < 60 else f"{int(avg_response_time/60)}m",
+                    "pipeline_value": pipeline_value
                 },
-                "volume_data": volume_data,
+                "funnel_data": [{"stage": stage.capitalize(), "count": count} for stage, count in funnel_data.items()],
+                "channel_conversion": [{"channel": k.capitalize(), "total": v["total"], "converted": v["converted"]} for k, v in channel_stats.items()],
+                "volume_data": volume_stats,
                 "intent_distribution": intent_dist,
                 "sentiment_analysis": sent_dist,
-                "busiest_hours": [], # Mock empty
-                "ai_resolution_rate": {"resolved_by_ai": 85} # Mock
+                "busiest_hours": busiest_hours,
+                "ai_resolution_rate": {
+                    "ai_count": len(ai_messages),
+                    "human_count": len(human_messages),
+                    "resolved_by_ai": int(ai_res_rate)
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error fetching analytics: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                "overview": {"total_conversations": 0, "active_users": 0, "total_messages": 0, "avg_response_time": "0s", "pipeline_value": 0},
+                "funnel_data": [],
+                "volume_data": [],
+                "intent_distribution": [],
+                "sentiment_analysis": [],
+                "busiest_hours": []
             }
         except Exception as e:
             logger.error(f"Error fetching analytics: {e}")
@@ -143,7 +214,8 @@ async def get_analytics_summary(business_id: str):
                 "overview": {"total_conversations": 0, "active_users": 0, "total_messages": 0, "avg_response_time": "0s"},
                 "volume_data": [],
                 "intent_distribution": [],
-                "sentiment_analysis": []
+                "sentiment_analysis": [],
+                "busiest_hours": []
             }
 
 async def get_chat_history(business_id: str, user_id: str, limit: int = 10):
@@ -227,6 +299,25 @@ async def get_business_profile(business_id: str):
         except Exception as e:
             logger.error(f"Error fetching profile: {e}")
             return {}
+            
+async def get_business_status(business_id: str):
+    async with AsyncSessionLocal() as session:
+        try:
+            stmt = select(Business).where(Business.id == business_id)
+            result = await session.execute(stmt)
+            business = result.scalar_one_or_none()
+            if not business: return None
+            return {
+                "id": business.id,
+                "name": business.name,
+                "status": business.status,
+                "plan_name": business.plan_name,
+                "trial_start_at": business.trial_start_at,
+                "trial_end_at": business.trial_end_at
+            }
+        except Exception as e:
+            logger.error(f"Error getting business status: {e}")
+            return None
 
 async def update_business_profile(business_id: str, data: dict):
     async with AsyncSessionLocal() as session:
@@ -311,34 +402,265 @@ async def delete_knowledge_document(business_id: str, doc_id: str):
 async def save_lead(business_id: str, lead_data: dict):
     async with AsyncSessionLocal() as session:
         try:
+            logger.info(f"[DB] Saving lead for BID {business_id}: {lead_data}")
             lead = Lead(business_id=business_id, **lead_data)
             session.add(lead)
             await session.commit()
             # Refresh to get ID
+            logger.info(f"[DB] Lead saved successfully with ID: {lead.id}")
             return lead.id
         except Exception as e:
             logger.error(f"Error saving lead: {e}")
             return None
 
 async def get_leads(business_id: str):
+    from services.crm_intelligence import crm_intelligence
     async with AsyncSessionLocal() as session:
         try:
             stmt = select(Lead).where(Lead.business_id == business_id).order_by(desc(Lead.created_at))
             result = await session.execute(stmt)
             leads = result.scalars().all()
-            return [{
-                "id": l.id,
-                "name": l.name,
-                "contact": l.contact,
-                "email": l.contact if "@" in (l.contact or "") else None,
-                "phone": l.contact if "@" not in (l.contact or "") else None,
-                "created_at": l.created_at,
-                "status": l.status,
-                "type": "lead"
-            } for l in leads]
+            
+            leads_with_scores = []
+            for l in leads:
+                lead_dict = {
+                    "id": l.id,
+                    "name": l.name,
+                    "contact": l.contact,
+                    "email": l.email or (l.contact if "@" in (l.contact or "") else None),
+                    "phone": l.phone or (l.contact if "@" not in (l.contact or "") else None),
+                    "tags": l.tags or [],
+                    "value": l.value,
+                    "custom_fields": l.custom_fields or {},
+                    "conversation_id": l.conversation_id,
+                    "created_at": l.created_at,
+                    "status": l.status,
+                    "type": "lead"
+                }
+                
+                # Calculate AI score
+                score_data = crm_intelligence.calculate_lead_score(lead_dict)
+                lead_dict["ai_score"] = score_data["score"]
+                lead_dict["ai_tier"] = score_data["tier"]
+                
+                leads_with_scores.append(lead_dict)
+            
+            return leads_with_scores
         except Exception as e:
             logger.error(f"Error fetching leads: {e}")
             return []
+
+async def update_lead(business_id: str, lead_id: int, updates: dict, user_id: str = "system"):
+    """
+    Updates lead fields and logs activity for meaningful changes (status, value, tags).
+    """
+    from database.models.crm import LeadActivity
+
+    async with AsyncSessionLocal() as session:
+        try:
+            lead = await session.get(Lead, lead_id)
+            if not lead or lead.business_id != business_id:
+                return None
+
+            # Track changes for activity log
+            changes = []
+            
+            if "status" in updates and updates["status"] != lead.status:
+                changes.append({"field": "status", "old": lead.status, "new": updates["status"]})
+                lead.status = updates["status"]
+            
+            if "value" in updates and updates["value"] != lead.value:
+                changes.append({"field": "value", "old": lead.value, "new": updates["value"]})
+                lead.value = updates["value"]
+
+            if "tags" in updates and updates["tags"] != lead.tags:
+                changes.append({"field": "tags", "old": lead.tags, "new": updates["tags"]})
+                lead.tags = updates["tags"]
+                
+            # Apply other generic updates
+            for k, v in updates.items():
+                if k not in ["status", "value", "tags"] and hasattr(lead, k):
+                    setattr(lead, k, v)
+
+            lead.last_interaction_at = datetime.utcnow()
+            
+            # Log Activities
+            for change in changes:
+                activity = LeadActivity(
+                    lead_id=lead.id,
+                    business_id=business_id,
+                    type=f"{change['field']}_change",
+                    content=change,
+                    created_by=user_id,
+                    created_at=datetime.utcnow()
+                )
+                session.add(activity)
+
+
+            await session.commit()
+            
+            # Trigger Workflows on Status Change
+            if changes:
+                for change in changes:
+                    if change['field'] == 'status':
+                        from services.workflow_engine import workflow_engine
+                        trigger_payload = {
+                            "lead_id": lead.id,
+                            "business_id": business_id,
+                            "old_status": change['old'],
+                            "new_status": change['new'],
+                            "lead_name": lead.name,
+                            "lead_email": lead.email,
+                            "lead_phone": lead.phone
+                        }
+                        try:
+                            await workflow_engine.trigger_workflow(
+                                business_id, 
+                                "lead_status_update", 
+                                trigger_payload
+                            )
+                            logger.info(f"Triggered lead_status_update workflows for lead {lead.id}")
+                        except Exception as e:
+                            logger.error(f"Error triggering workflow: {e}")
+            
+            # Return updated lead struct
+            return {
+                "id": lead.id,
+                "status": lead.status,
+                "value": lead.value,
+                "tags": lead.tags,
+                "last_interaction_at": lead.last_interaction_at
+            }
+        except Exception as e:
+            logger.error(f"Error updating lead: {e}")
+            return None
+
+async def get_lead_activities(business_id: str, lead_id: int):
+    from database.models.crm import LeadActivity
+    async with AsyncSessionLocal() as session:
+        try:
+            stmt = select(LeadActivity).where(
+                LeadActivity.lead_id == lead_id, 
+                LeadActivity.business_id == business_id
+            ).order_by(desc(LeadActivity.created_at))
+            
+            result = await session.execute(stmt)
+            activities = result.scalars().all()
+            
+            return [{
+                "id": a.id,
+                "type": a.type,
+                "content": a.content,
+                "created_by": a.created_by,
+                "created_at": a.created_at
+            } for a in activities]
+        except Exception as e:
+            logger.error(f"Error fetching lead activities: {e}")
+            return []
+
+async def send_lead_message(business_id: str, lead_id: int, message_text: str, user_id: str = "system", platform: str = "whatsapp"):
+    """
+    Sends a message to a lead with full reliability:
+    1. Persists message with 'pending' status
+    2. Attempts to send via WhatsApp
+    3. Updates status to 'sent' or 'failed'
+    4. Logs LeadActivity
+    5. Updates lead.last_interaction_at
+    """
+    from database.models.crm import LeadActivity
+    from database.models.chat import Message, Conversation
+    from services.whatsapp_service import send_whatsapp_message
+    
+    async with AsyncSessionLocal() as session:
+        try:
+            # 1. Get Lead
+            lead = await session.get(Lead, lead_id)
+            if not lead or lead.business_id != business_id:
+                return {"success": False, "error": "Lead not found"}
+            
+            # 2. Determine recipient (phone or conversation_id)
+            recipient = lead.phone or lead.conversation_id
+            if not recipient:
+                return {"success": False, "error": "No contact method available"}
+            
+            # 3. Ensure Conversation exists
+            conversation_id = lead.conversation_id or recipient
+            stmt = select(Conversation).where(
+                Conversation.id == conversation_id,
+                Conversation.business_id == business_id
+            )
+            result = await session.execute(stmt)
+            conversation = result.scalar_one_or_none()
+            
+            if not conversation:
+                conversation = Conversation(
+                    id=conversation_id,
+                    business_id=business_id,
+                    customer_name=lead.name,
+                    platform=platform
+                )
+                session.add(conversation)
+                await session.flush()
+            
+            # 4. Create Message with 'pending' status
+            message = Message(
+                business_id=business_id,
+                conversation_id=conversation_id,
+                text=message_text,
+                sender="agent",
+                platform=platform,
+                status="pending",
+                timestamp=datetime.utcnow()
+            )
+            session.add(message)
+            await session.flush()
+            
+            # 5. Attempt to send
+            send_success = False
+            error_msg = None
+            try:
+                await send_whatsapp_message(recipient, message_text, business_id)
+                message.status = "sent"
+                send_success = True
+            except Exception as e:
+                logger.error(f"Failed to send message to {recipient}: {e}")
+                message.status = "failed"
+                error_msg = str(e)
+            
+            # 6. Log Activity
+            activity_content = {
+                "message": message_text,
+                "recipient": recipient,
+                "status": message.status
+            }
+            if error_msg:
+                activity_content["error"] = error_msg
+            
+            activity = LeadActivity(
+                lead_id=lead.id,
+                business_id=business_id,
+                type="message_sent" if send_success else "message_failed",
+                content=activity_content,
+                created_by=user_id,
+                created_at=datetime.utcnow()
+            )
+            session.add(activity)
+            
+            # 7. Update Lead
+            lead.last_interaction_at = datetime.utcnow()
+            
+            await session.commit()
+            
+            return {
+                "success": send_success,
+                "message_id": message.id,
+                "status": message.status,
+                "error": error_msg
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in send_lead_message: {e}")
+            return {"success": False, "error": str(e)}
 
 async def create_ticket(business_id: str, ticket_data: dict):
     async with AsyncSessionLocal() as session:
@@ -378,6 +700,69 @@ async def assign_agent(business_id: str, target_id: str, agent_id: str, target_t
         except Exception as e:
             logger.error(f"Error assigning agent: {e}")
             return False
+
+# --- WhatsApp Configuration ---
+
+async def get_whatsapp_config(business_id: str):
+    async with AsyncSessionLocal() as session:
+        try:
+            stmt = select(BusinessWhatsAppConfig).where(BusinessWhatsAppConfig.business_id == business_id)
+            result = await session.execute(stmt)
+            config = result.scalar_one_or_none()
+            
+            if not config: return None
+            
+            return {
+                "phone_number_id": config.phone_number_id,
+                "business_account_id": config.business_account_id,
+                "app_id": config.app_id,
+                "app_secret": decrypt_token(config.app_secret) if config.app_secret else None,
+                "access_token": decrypt_token(config.access_token) if config.access_token else None,
+                "webhook_verified": config.webhook_verified,
+                "is_active": config.is_active
+            }
+        except Exception as e:
+            logger.error(f"Error fetching WhatsApp config: {e}")
+            return None
+
+async def update_whatsapp_config(business_id: str, data: dict):
+    async with AsyncSessionLocal() as session:
+        try:
+            stmt = select(BusinessWhatsAppConfig).where(BusinessWhatsAppConfig.business_id == business_id)
+            result = await session.execute(stmt)
+            config = result.scalar_one_or_none()
+            
+            # Encrypt sensitive fields
+            if "app_secret" in data and data["app_secret"]:
+                data["app_secret"] = encrypt_token(data["app_secret"])
+            if "access_token" in data and data["access_token"]:
+                data["access_token"] = encrypt_token(data["access_token"])
+                
+            if config:
+                for k, v in data.items():
+                    setattr(config, k, v)
+                config.updated_at = datetime.utcnow()
+            else:
+                config = BusinessWhatsAppConfig(business_id=business_id, **data)
+                session.add(config)
+            
+            await session.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating WhatsApp config: {e}")
+            return False
+
+async def get_business_id_by_phone_id(phone_number_id: str) -> str:
+    """Finds a business_id by its WhatsApp Phone Number ID."""
+    async with AsyncSessionLocal() as session:
+        try:
+            stmt = select(BusinessWhatsAppConfig).where(BusinessWhatsAppConfig.phone_number_id == phone_number_id)
+            result = await session.execute(stmt)
+            config = result.scalar_one_or_none()
+            return config.business_id if config else None
+        except Exception as e:
+            logger.error(f"Error finding business by phone_id: {e}")
+            return None
 
 async def log_prompt_execution(business_id: str, user_id: str, prompt, response, meta):
     # Fire and forget logging (could be Redis or simple print for MVP refactor)

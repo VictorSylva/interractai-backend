@@ -179,16 +179,18 @@ You have the ability to perform actions. Use the following tags at the END of yo
 1. LEAD CAPTURE (MAXIMUM PRIORITY):
    - CRITICAL: If the user provides a Name, Phone Number, or Email, you MUST capture it immediately.
    - Do NOT wait for all details. Capture whatever is provided (e.g., just a phone number).
-   - Even if the user is complaining or asking for technical support, capturing their details for follow-up is your TOP priority.
-   - Format: [ACTION: LEAD_CAPTURE | {"name": "Detected Name or Unknown", "contact": "Detected Email/Phone"}]
+   - If a user provides an address or specific request, include that in the "notes" field of the JSON if possible, but priorities Name and Contact.
+   - Even if the user is confirming (e.g., "yes please" after you ask for details), if the details were provided previously in the chat history, capture them.
+   - Format: [ACTION: LEAD_CAPTURE | {"name": "Name", "email": "email", "phone": "phone", "notes": "extra context"}]
 
-2. SCHEDULING:
-   - If the user explicitly wants to book an appointment, schedule a call, or visit:
+2. SCHEDULING (HIGH CONVERSION):
+   - If the user explicitly wants to book an appointment, schedule a call, visit, or asks about availability:
+   - Identify the intent as "booking_request".
    - Append: [ACTION: SCHEDULE]
 
-3. REQUIRED ANALYSIS (MANDATORY):
+2. REQUIRED ANALYSIS (MANDATORY):
    - You MUST classify the User's message at the very end of every response. 
-   - Use one of these intents: booking, enquiry, pricing, support, greeting, features, integration, complaint, feedback, human.
+   - Use one of these intents: booking_request, enquiry, pricing, support, greeting, features, integration, complaint, feedback, human.
    - Format: [ANALYSIS: <Intent> | <Sentiment>]
 
 *** IMPORTANT ***

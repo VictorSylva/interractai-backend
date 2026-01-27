@@ -5,10 +5,19 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 import os
+from dotenv import load_dotenv
 
 # Import Base and ALL models
 from database.base import Base
 from database.models import general, chat, workflow, crm  # Ensure models are imported
+
+# Load Environment Variables Dynamically
+ENV = os.getenv("ENV", "production")
+if ENV == "dev":
+    env_file = ".env.dev"
+    if os.path.exists(env_file):
+        load_dotenv(env_file)
+        print(f"Alembic: Loaded configuration from {env_file}")
 
 config = context.config
 

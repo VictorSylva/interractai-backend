@@ -1,83 +1,149 @@
-from .db_service import db
+from sqlalchemy import select, func
+from database.session import AsyncSessionLocal
+from database.models.general import Business, User, BusinessSettings, KnowledgeDoc, BusinessWhatsAppConfig
+from database.models.chat import Message, Conversation
+from database.models.workflow import Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, ExecutionStep
+from database.models.crm import Lead, Ticket
 import logging
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 class AdminService:
     async def check_is_super_admin(self, user_id: str):
-        # MVP: Hardcoded check or DB check.
-        # For this demo, let's assume specific IDs or emails are super admin.
-        # In production, this should check a 'is_super_admin' claim or field in a global 'users' collection.
-        # ALLOWING ALL FOR DEMO if user_id starts with 'admin_'
-        # if user_id and user_id.startswith('admin_'): return True
-        return True # OPEN FOR DEV to ensure verified
+        """Checks if a user has the super_admin role in SQL."""
+        async with AsyncSessionLocal() as session:
+            try:
+                stmt = select(User).where(User.id == user_id)
+                result = await session.execute(stmt)
+                user = result.scalar_one_or_none()
+                return user and user.role in ["super_admin", "admin"]
+            except Exception as e:
+                logger.error(f"Error checking admin status: {e}")
+                return False
 
     async def get_all_businesses(self):
-        if not db:
-            print("[DEBUG] DB is None in admin_service")
-            return []
-        try:
-            businesses = []
-            seen_ids = set()
+        """Fetches all businesses from the SQL database."""
+        async with AsyncSessionLocal() as session:
+            try:
+                stmt = select(Business)
+                result = await session.execute(stmt)
+                businesses = result.scalars().all()
+                
+                return [{
+                    "business_id": b.id,
+                    "name": b.name,
+                    "created_at": b.created_at,
+                    "status": b.status,
+                    "plan_name": b.plan_name or "starter" # Default to starter if null
+                } for b in businesses]
+            except Exception as e:
+                logger.error(f"Error fetching all businesses: {e}")
+                return []
 
-            # 1. Try standard listing (for properly created docs)
-            docs = db.collection("businesses").stream()
-            for doc in docs:
-                seen_ids.add(doc.id)
-                d = doc.to_dict()
-                d['business_id'] = doc.id
-                d['status'] = 'Active' # Default
-                businesses.append(d)
-            
-            # 2. Phantom Discovery via Conversations
-            # Verify if we missed any (common in Firestore if only subcollections exist)
-            # This is a bit expensive but necessary if parent docs aren't created.
-            convs = db.collection_group("conversations").limit(50).stream() 
-            for c in convs:
-                # Path: businesses/{business_id}/conversations/{user_id}
-                # parent = conversations collection
-                # parent.parent = business document
-                business_doc = c.reference.parent.parent
-                if business_doc and business_doc.id not in seen_ids:
-                    seen_ids.add(business_doc.id)
-                    businesses.append({
-                        "business_id": business_doc.id,
-                        "name": f"Business {business_doc.id[:4]}...", # Fallback name
-                        "industry": "Unknown",
-                        "status": "Phantom (Auto-Detected)" 
-                    })
+    async def update_business_status(self, business_id: str, status: str):
+        """Updates the status of a business (active, suspended, etc)."""
+        async with AsyncSessionLocal() as session:
+            try:
+                stmt = select(Business).where(Business.id == business_id)
+                result = await session.execute(stmt)
+                business = result.scalar_one_or_none()
+                if not business:
+                    return False
+                
+                business.status = status
+                await session.commit()
+                return True
+            except Exception as e:
+                logger.error(f"Error updating business status: {e}")
+                await session.rollback()
+                return False
 
-            print(f"[DEBUG] Total businesses found: {len(businesses)}")
-            return businesses
-        except Exception as e:
-            logger.error(f"Error fetching all businesses: {e}")
-            print(f"[DEBUG] Error fetching businesses: {e}")
-            return []
+    async def delete_business(self, business_id: str):
+        """Permanently deletes a business and all its associated data."""
+        async with AsyncSessionLocal() as session:
+            try:
+                from sqlalchemy import delete
+                
+                # Deletion sequence to satisfy foreign key constraints
+                
+                # 1. Chat related
+                await session.execute(delete(Message).where(Message.business_id == business_id))
+                await session.execute(delete(Conversation).where(Conversation.business_id == business_id))
+                
+                # 2. Workflow related
+                # Execution steps depend on executions
+                # We need to find executions for this business
+                exec_ids_stmt = select(WorkflowExecution.id).where(WorkflowExecution.business_id == business_id)
+                exec_ids_res = await session.execute(exec_ids_stmt)
+                exec_ids = exec_ids_res.scalars().all()
+                if exec_ids:
+                    await session.execute(delete(ExecutionStep).where(ExecutionStep.execution_id.in_(exec_ids)))
+                
+                await session.execute(delete(WorkflowExecution).where(WorkflowExecution.business_id == business_id))
+                
+                # Nodes and edges depend on workflows
+                work_ids_stmt = select(Workflow.id).where(Workflow.business_id == business_id)
+                work_ids_res = await session.execute(work_ids_stmt)
+                work_ids = work_ids_res.scalars().all()
+                if work_ids:
+                    await session.execute(delete(WorkflowEdge).where(WorkflowEdge.workflow_id.in_(work_ids)))
+                    await session.execute(delete(WorkflowNode).where(WorkflowNode.workflow_id.in_(work_ids)))
+                
+                await session.execute(delete(Workflow).where(Workflow.business_id == business_id))
+                
+                # 3. CRM related
+                await session.execute(delete(Lead).where(Lead.business_id == business_id))
+                await session.execute(delete(Ticket).where(Ticket.business_id == business_id))
+                
+                # 4. General related
+                await session.execute(delete(User).where(User.business_id == business_id))
+                await session.execute(delete(BusinessSettings).where(BusinessSettings.business_id == business_id))
+                await session.execute(delete(KnowledgeDoc).where(KnowledgeDoc.business_id == business_id))
+                await session.execute(delete(BusinessWhatsAppConfig).where(BusinessWhatsAppConfig.business_id == business_id))
+                
+                # 5. Final target
+                stmt = delete(Business).where(Business.id == business_id)
+                result = await session.execute(stmt)
+                
+                await session.commit()
+                return result.rowcount > 0
+            except Exception as e:
+                logger.error(f"Error deleting business {business_id}: {e}")
+                await session.rollback()
+                return False
 
     async def get_platform_stats(self):
-        if not db: return {}
-        try:
-            # Aggregate stats
-            # 1. Total Businesses
-            # Firestore count() queries are efficient
-            total_businesses = 0 # Placeholder for exact count query if sdk supports
-            businesses = await self.get_all_businesses()
-            total_businesses = len(businesses)
+        """Aggregates platform-wide stats from SQL."""
+        async with AsyncSessionLocal() as session:
+            try:
+                # 1. Total Businesses
+                stmt_biz = select(func.count(Business.id))
+                res_biz = await session.execute(stmt_biz)
+                total_businesses = res_biz.scalar() or 0
 
-            # 2. Total Messages (Estimate)
-            # This is hard without a global counter. 
-            # We will perform a simplified estimation or use a dedicated counters collection if it existed.
-            # For MVP: Return 0 or sum from fetched businesses if small scale.
-            
-            return {
-                "total_businesses": total_businesses,
-                "total_users": total_businesses * 5, # Mock estimation
-                "total_messages_processed": total_businesses * 124, # Mock estimation
-                "active_subscriptions": total_businesses # Assuming all active for now
-            }
-        except Exception as e:
-            logger.error(f"Error getting platform stats: {e}")
-            return {}
+                # 2. Total Users
+                stmt_users = select(func.count(User.id))
+                res_users = await session.execute(stmt_users)
+                total_users = res_users.scalar() or 0
+
+                # 3. Total Messages
+                stmt_msgs = select(func.count(Message.id))
+                res_msgs = await session.execute(stmt_msgs)
+                total_messages = res_msgs.scalar() or 0
+
+                return {
+                    "total_businesses": total_businesses,
+                    "total_users": total_users,
+                    "total_messages_processed": total_messages,
+                    "active_subscriptions": total_businesses # Placeholder
+                }
+            except Exception as e:
+                logger.error(f"Error getting platform stats: {e}")
+                return {
+                    "total_businesses": 0,
+                    "total_users": 0,
+                    "total_messages_processed": 0,
+                    "active_subscriptions": 0
+                }
 
 admin_service = AdminService()

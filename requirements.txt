@@ -24,3 +24,5 @@ python-docx
 # Auth
 passlib[bcrypt]
 httpx
+cryptography
+aiosmtplib

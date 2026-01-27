@@ -8,6 +8,10 @@ class Business(Base):
 
     id = Column(String, primary_key=True, index=True) # Manually assigned ID (e.g. 'demo')
     name = Column(String)
+    status = Column(String, default="active") # active, suspended, trial, expired
+    plan_name = Column(String, default="starter")
+    trial_start_at = Column(DateTime, nullable=True)
+    trial_end_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
@@ -17,6 +21,13 @@ class Business(Base):
     conversations = relationship("Conversation", back_populates="business")
     workflows = relationship("Workflow", back_populates="business")
     leads = relationship("Lead", back_populates="business")
+    whatsapp_config = relationship("BusinessWhatsAppConfig", back_populates="business", uselist=False)
+    activities = relationship("LeadActivity", back_populates="business")
+    
+    # Scheduling Relationships
+    appointment_types = relationship("AppointmentType", back_populates="business")
+    availability_rules = relationship("AvailabilityRule", back_populates="business")
+    appointments = relationship("Appointment", back_populates="business")
 
 class User(Base):
     __tablename__ = "users"
@@ -26,6 +37,8 @@ class User(Base):
     email = Column(String, unique=True, index=True)
     password_hash = Column(String) # For SQL Auth
     role = Column(String, default="agent") # owner, agent
+    reset_token = Column(String, nullable=True)
+    reset_token_expiry = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     business = relationship("Business", back_populates="users")
@@ -60,3 +73,24 @@ class KnowledgeDoc(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     business = relationship("Business", back_populates="knowledge_docs")
+
+class BusinessWhatsAppConfig(Base):
+    """Stores business-specific WhatsApp API credentials."""
+    __tablename__ = "business_whatsapp_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(String, ForeignKey("businesses.id"), unique=True)
+    
+    phone_number_id = Column(String)
+    business_account_id = Column(String)
+    app_id = Column(String)
+    app_secret = Column(Text) # Encrypted
+    access_token = Column(Text) # Encrypted
+    
+    webhook_verified = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=False)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    business = relationship("Business", back_populates="whatsapp_config")

@@ -35,6 +35,8 @@ class WorkflowEngine:
             if trigger_type == "message_created":
                 target_types.append("keyword")
                 target_types.append("intent")
+            elif trigger_type == "lead_status_update":
+                target_types.append("lead_event")
 
             logger.info(f"[WorkflowEngine] Querying for BID: '{business_id}' | Types: {target_types}")
             stmt = select(Workflow).where(
@@ -348,6 +350,13 @@ class WorkflowEngine:
         if "intent" in config:
             intent = data.get("intent")
             if intent != config["intent"]:
+                return False
+        
+        # Lead Status Match (for lead_event triggers)
+        if "status" in config:
+            new_status = data.get("new_status", "").lower()
+            target_status = config["status"].lower()
+            if new_status != target_status:
                 return False
                 
         return True
@@ -750,12 +759,29 @@ Respond directly to the user to achieve the WORKFLOW GOAL.
         notes_val = hydrate_text(config.get("notes", "Captured via Workflow {{workflow_id}}"), context)
         if "{{workflow_id}}" in notes_val: notes_val = notes_val.replace("{{workflow_id}}", str(node.workflow_id))
 
+        trigger = context.get("trigger", {})
+        contact_info = trigger.get("from_number") or trigger.get("user_id")
+        
+        # Merge AI extracted data if available
+        ai_data = {}
+        if isinstance(context.get("ai_output"), dict):
+            ai_data = context.get("ai_output")
+        elif isinstance(context.get("extracted_data"), dict): # Support explicit key if we add it
+            ai_data = context.get("extracted_data")
+
         lead_data = {
             "name": name_val,
-            "contact": context.get("trigger", {}).get("from_number") or context.get("trigger", {}).get("user_id"),
+            "contact": contact_info,
+            "email": ai_data.get("email") or (contact_info if "@" in (contact_info or "") else None),
+            "phone": ai_data.get("phone") or (contact_info if "@" not in (contact_info or "") else None),
             "source": "workflow_automation",
             "notes": notes_val,
-            "status": config.get("status", "new")
+            "status": config.get("status", "new"),
+            "tags": ai_data.get("tags", []),
+            "value": ai_data.get("budget") or ai_data.get("value"),
+            "custom_fields": ai_data,
+            "conversation_id": trigger.get("user_id"),
+            "last_interaction_at": datetime.utcnow()
         }
         
         lead_id = await save_lead(context.get("business_id", "default"), lead_data)
@@ -763,9 +789,124 @@ Respond directly to the user to achieve the WORKFLOW GOAL.
 
     elif node_type == "wait_for_reply":
         # Orchestration: Suspend Execution
-        # The engine needs to know to STOP passing to the next node immediately
-        # and instead mark the execution as 'suspended'.
         return {"orchestration_signal": "suspend", "resume_node_id": node.id}
+
+    elif node_type == "appointment_booking":
+        # Scheduling: Native Appointment Flow
+        from services.scheduling_service import scheduling_service
+        from services.ai_service import generate_response
+        
+        business_id = context.get("business_id", "default")
+        
+        # Check if we are RESUMING or STARTING
+        latest_reply = context.get("latest_reply")
+        pending_slots = context.get("pending_slots")
+        
+        if latest_reply and pending_slots:
+            # --- RESUME LOGIC: Confirm Slot ---
+            logger.info(f"[WorkflowEngine] Resuming Appointment Booking for BID {business_id}. Reply: {latest_reply}")
+            
+            # Use AI to match the reply to one of the slots
+            match_prompt = f"""
+            Identify which of these slots the user selected. 
+            SLOTS: {json.dumps(pending_slots)}
+            USER REPLY: "{latest_reply}"
+            
+            Return ONLY the index (0, 1, 2...) of the slot, or "none" if no match.
+            """
+            match_idx_str = await generate_response(match_prompt, system_instruction="You are a precise slot matcher. Return ONLY the index or 'none'.", business_id=business_id)
+            
+            try:
+                idx = int(re.sub(r'[^\d]', '', match_idx_str))
+                selected_slot = pending_slots[idx]
+                
+                # Book it!
+                lead_id = context.get("lead_id") # If we captured lead before
+                conversation_id = context.get("trigger", {}).get("user_id")
+                apt_type_id = config.get("appointment_type_id")
+                
+                res = await scheduling_service.book_appointment(
+                    business_id=business_id,
+                    appointment_type_id=apt_type_id,
+                    start_at=datetime.fromisoformat(selected_slot["start"]),
+                    lead_id=lead_id,
+                    conversation_id=conversation_id,
+                    notes=f"Booked via Workflow: {node.workflow_id}"
+                )
+                
+                if res["success"]:
+                    confirmation_msg = f"Confirmed! You are booked for {selected_slot['display']}."
+                    # Send confirmation
+                    target_number = context.get("trigger", {}).get("from_number")
+                    if target_number:
+                        from services.whatsapp_service import send_whatsapp_message
+                        await send_whatsapp_message(target_number, confirmation_msg)
+                    else:
+                        from services.db_service import store_message
+                        await store_message(business_id, conversation_id, confirmation_msg, "agent", platform="web")
+                    
+                    return {"booking_result": "success", "appointment_id": res["appointment_id"], "booked_slot": selected_slot}
+                else:
+                    return {"booking_result": "failed", "error": res.get("error")}
+            except:
+                # No match? Ask again or fail.
+                retry_msg = "I'm sorry, I didn't quite catch that. Which of those times works best for you?"
+                return {"orchestration_signal": "suspend", "resume_node_id": node.id, "pending_slots": pending_slots, "ai_output": retry_msg}
+
+        else:
+            # --- START LOGIC: Propose Slots ---
+            apt_type_id = config.get("appointment_type_id")
+            if not apt_type_id:
+                # Fallback: get first available type
+                from database.models.scheduling import AppointmentType
+                async with AsyncSessionLocal() as session:
+                    res = await session.execute(select(AppointmentType).where(AppointmentType.business_id == business_id).limit(1))
+                    apt_type = res.scalar_one_or_none()
+                    apt_type_id = apt_type.id if apt_type else None
+            
+            if not apt_type_id:
+                return {"error": "No appointment types found"}
+
+            # Get slots for next 3 days
+            all_slots = []
+            for i in range(3):
+                target_date = (datetime.utcnow() + timedelta(days=i+1)).date()
+                slots = await scheduling_service.get_available_slots(business_id, target_date, apt_type_id)
+                all_slots.extend(slots)
+            
+            # Pick top 3
+            proposed_slots = []
+            for s in all_slots[:3]:
+                proposed_slots.append({
+                    "start": s.isoformat(),
+                    "display": s.strftime("%A, %b %d at %I:%M %p")
+                })
+            
+            if not proposed_slots:
+                return {"booking_result": "no_slots", "ai_output": "I'm sorry, we don't have any available slots right now."}
+
+            # Propose via AI
+            slots_text = "\n".join([f"- {s['display']}" for s in proposed_slots])
+            proposal_prompt = f"Invite the user to book an appointment. Offer these slots and ask them to pick one:\n{slots_text}"
+            
+            proposal_msg = await generate_response(proposal_prompt, business_id=business_id)
+            
+            # Send proposal
+            target_number = context.get("trigger", {}).get("from_number")
+            conversation_id = context.get("trigger", {}).get("user_id")
+            if target_number:
+                from services.whatsapp_service import send_whatsapp_message
+                await send_whatsapp_message(target_number, proposal_msg)
+            else:
+                from services.db_service import store_message
+                await store_message(business_id, conversation_id, proposal_msg, "agent", platform="web")
+
+            return {
+                "orchestration_signal": "suspend", 
+                "resume_node_id": node.id, 
+                "pending_slots": proposed_slots, 
+                "ai_output": proposal_msg
+            }
 
     elif node_type == "condition":
         # Condition: Evaluate Logic

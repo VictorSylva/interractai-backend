@@ -33,6 +33,7 @@ class Message(Base):
     sender = Column(String) # customer, agent
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     platform = Column(String)
+    status = Column(String, default="sent") # pending, sent, failed
     
     intent = Column(String)
     sentiment = Column(String)

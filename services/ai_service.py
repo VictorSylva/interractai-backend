@@ -52,24 +52,31 @@ async def generate_response(user_message: str, conversation_history: list = None
     }
 
     try:
+        logger.info(f"[AI] Calling {MODEL_NAME} for user {user_id}...")
         async with httpx.AsyncClient() as client:
-            response = await client.post(API_URL, headers=headers, json=payload, timeout=30.0)
+            response = await client.post(API_URL, headers=headers, json=payload, timeout=15.0)
             response.raise_for_status()
             data = response.json()
             
             if 'choices' in data and len(data['choices']) > 0:
                 ai_content = data['choices'][0]['message']['content']
+                logger.info(f"[AI] Response received ({len(ai_content)} chars)")
                 
-                # Log execution
+                # Log execution (non-blocking)
                 if business_id:
-                     await log_prompt_execution(business_id, user_id, messages, ai_content, meta={"model": MODEL_NAME})
+                    try:
+                        await log_prompt_execution(business_id, user_id, messages, ai_content, meta={"model": MODEL_NAME})
+                    except Exception as log_err:
+                        logger.error(f"Error logging prompt execution: {log_err}")
                 
                 return ai_content
             else:
                 logger.error(f"Unexpected response format: {data}")
                 return "I'm having trouble processing that right now."
                 
+    except httpx.TimeoutException:
+        logger.error(f"AI Service timeout after 15s")
+        return "I'm taking too long to respond. Please try again."
     except Exception as e:
         logger.error(f"Error calling AI Provider: {e}")
-        # Fallback to Mock AI for Demo Mode if API fails
-        return f"I'm in Demo Mode! Error: {e}"
+        return f"I'm having trouble connecting to my AI service. Please try again in a moment."

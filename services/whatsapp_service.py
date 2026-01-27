@@ -11,9 +11,12 @@ import httpx
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "interact_secret_token")
-WHATSAPP_API_TOKEN = os.getenv("WHATSAPP_API_TOKEN")
-PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+from .db_service import get_whatsapp_config, get_business_id_by_phone_id
+
+WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "interact_secret_token")
+# Global fallbacks for backward compatibility or system-level messages
+DEFAULT_API_TOKEN = os.getenv("WHATSAPP_API_TOKEN")
+DEFAULT_PHONE_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
 
 @router.get("/webhook")
 async def verify_webhook(request: Request):
@@ -26,7 +29,9 @@ async def verify_webhook(request: Request):
     challenge = params.get("hub.challenge")
 
     if mode and token:
-        if mode == "subscribe" and token == WHATSAPP_TOKEN:
+        # We can support either a global verify token or business-specific ones.
+        # For simplicity in the Meta developer portal, we'll keep one global verify token.
+        if mode == "subscribe" and token == WHATSAPP_VERIFY_TOKEN:
             logger.info("Webhook verified successfully.")
             return int(challenge)
         else:
@@ -53,13 +58,29 @@ async def receive_message(request: Request):
             if msg_body:
                 logger.info(f"Received message from {from_number}: {msg_body}")
                 
-                # 1. Store incoming message
-                # TODO: Implement a dynamic lookup table: PHONE_ID -> BUSINESS_EMAIL
-                # For now, using PRIMARY_BUSINESS_ID env or defaulting to the owner's email.
-                business_id_input = os.getenv("PRIMARY_BUSINESS_ID", "groupcopac@gmail.com")
-                from .db_service import store_message, get_chat_history, resolve_business_id
-                business_id = await resolve_business_id(business_id_input)
+                # 1. Resolve Business ID from Phone Number ID (Tenancy Resolver)
+                metadata = value.get("metadata", {})
+                phone_id = metadata.get("phone_number_id")
                 
+                business_id = await get_business_id_by_phone_id(phone_id)
+                
+                if not business_id:
+                    # Fallback to system-level if not found or configured per-business
+                    business_id_input = os.getenv("PRIMARY_BUSINESS_ID", "groupcopac@gmail.com")
+                    from .db_service import resolve_business_id
+                    business_id = await resolve_business_id(business_id_input)
+                else:
+                    logger.info(f"Resolved Business ID {business_id} for Phone ID {phone_id}")
+
+                # Check Subscription
+                from services.subscription_service import check_subscription_access
+                if not await check_subscription_access(business_id):
+                    logger.warning(f"[WhatsApp] Blocked access for {business_id} (status: expired/suspended)")
+                    # Optional: Notify user once.
+                    await send_whatsapp_message(from_number, "Your InteracAI trial has ended. Please log in to your dashboard to upgrade.", business_id=business_id)
+                    return {"status": "blocked"}
+
+                from .db_service import store_message, get_chat_history
                 await store_message(business_id, from_number, msg_body, "customer", platform="whatsapp")
                 
                 # 1.5. Trigger Workflow Automation ( Arbitration Check )
@@ -140,21 +161,32 @@ async def receive_message(request: Request):
 
                 # 5. Store & Send AI response
                 await store_message(business_id, from_number, ai_reply, "agent", platform="whatsapp", intent=final_intent, sentiment=final_sentiment)
-                await send_whatsapp_message(from_number, ai_reply)
+                await send_whatsapp_message(from_number, ai_reply, business_id=business_id)
 
         return {"status": "received"}
     except Exception as e:
         logger.error(f"Error processing webhook: {e}")
         return {"status": "error"}
 
-async def send_whatsapp_message(to_number: str, text: str):
-    if not WHATSAPP_API_TOKEN or not PHONE_NUMBER_ID:
-        logger.error("WhatsApp credentials missing.")
+async def send_whatsapp_message(to_number: str, text: str, business_id: str = None):
+    # Determine credentials
+    api_token = DEFAULT_API_TOKEN
+    phone_id = DEFAULT_PHONE_ID
+    
+    if business_id:
+        config = await get_whatsapp_config(business_id)
+        if config and config.get("is_active"):
+            api_token = config.get("access_token")
+            phone_id = config.get("phone_number_id")
+            logger.info(f"Using business-specific WhatsApp credentials for {business_id}")
+    
+    if not api_token or not phone_id:
+        logger.error(f"WhatsApp credentials missing for business {business_id or 'System'}")
         return
 
-    url = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
+    url = f"https://graph.facebook.com/v17.0/{phone_id}/messages"
     headers = {
-        "Authorization": f"Bearer {WHATSAPP_API_TOKEN}",
+        "Authorization": f"Bearer {api_token}",
         "Content-Type": "application/json"
     }
     payload = {
@@ -164,4 +196,6 @@ async def send_whatsapp_message(to_number: str, text: str):
     }
     
     async with httpx.AsyncClient() as client:
-        await client.post(url, headers=headers, json=payload)
+        response = await client.post(url, headers=headers, json=payload)
+        if response.status_code != 200:
+            logger.error(f"WhatsApp Send Failed: {response.text}")
