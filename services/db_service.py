@@ -288,14 +288,28 @@ async def get_conversation_messages(business_id: str, user_id: str, limit: int =
 async def get_business_profile(business_id: str):
     async with AsyncSessionLocal() as session:
         try:
-            stmt = select(BusinessSettings).where(BusinessSettings.business_id == business_id)
+            # Join with Business table to get the name
+            stmt = select(Business, BusinessSettings).join(
+                BusinessSettings, Business.id == BusinessSettings.business_id, isouter=True
+            ).where(Business.id == business_id)
+            
             result = await session.execute(stmt)
-            settings = result.scalar_one_or_none()
+            row = result.first()
             
-            if not settings: return {}
+            if not row:
+                return {}
             
-            # Convert to dict
-            return {c.name: getattr(settings, c.name) for c in settings.__table__.columns}
+            business, settings = row
+            profile = {
+                "name": business.name,
+                "status": business.status,
+                "plan_name": business.plan_name
+            }
+            
+            if settings:
+                profile.update({c.name: getattr(settings, c.name) for c in settings.__table__.columns if c.name not in ['id', 'business_id']})
+            
+            return profile
         except Exception as e:
             logger.error(f"Error fetching profile: {e}")
             return {}
@@ -322,21 +336,29 @@ async def get_business_status(business_id: str):
 async def update_business_profile(business_id: str, data: dict):
     async with AsyncSessionLocal() as session:
         try:
-            # Check if exists
+            # 1. Update Business Name in 'businesses' table
+            if 'name' in data:
+                business_stmt = select(Business).where(Business.id == business_id)
+                business_result = await session.execute(business_stmt)
+                business = business_result.scalar_one_or_none()
+                if business:
+                    business.name = data.pop('name')
+            
+            # 2. Update/Create Settings in 'business_settings' table
             stmt = select(BusinessSettings).where(BusinessSettings.business_id == business_id)
             result = await session.execute(stmt)
             settings = result.scalar_one_or_none()
             
             data.pop('updated_at', None) # handle auto
+            data.pop('id', None) # safety
+            data.pop('business_id', None) # safety
             
             if settings:
                 for k, v in data.items():
-                    setattr(settings, k, v)
+                    if hasattr(settings, k):
+                        setattr(settings, k, v)
                 settings.updated_at = datetime.utcnow()
             else:
-                # Need to ensure Business exists first or FK fails?
-                # For MVP assume Business creation handled elsewhere or we create loosely
-                # We'll create settings
                 settings = BusinessSettings(business_id=business_id, **data)
                 session.add(settings)
             
@@ -344,6 +366,7 @@ async def update_business_profile(business_id: str, data: dict):
             return data
         except Exception as e:
             logger.error(f"Error updating profile: {e}")
+            await session.rollback()
             return None
 
 # --- Knowledge Base & Learning ---

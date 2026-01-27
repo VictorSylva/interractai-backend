@@ -97,13 +97,12 @@ class PromptService:
         """
         Dynamically builds a system prompt based on the business profile.
         """
-        if not profile:
-            return self.base_system
+        business_name = profile.get('name') or profile.get('business_name') or 'this business'
         
-        system_text = f"You are the AI assistant for {profile.get('name', 'a business')}.\n"
+        system_text = f"You are the AI assistant for {business_name}. Your primary goal is to represent them professionally and help customers with their specific inquiries.\n"
         
         if profile.get('industry'):
-            ind = profile.get('industry').lower()
+            ind = str(profile.get('industry')).lower()
             system_text += f"\nIndustry: {profile.get('industry')}.\n"
             
             # Inject Industry Logic
@@ -116,17 +115,16 @@ class PromptService:
             if not any(key in ind for key in self.industry_templates):
                 system_text += "\nINDUSTRY: GENERAL BUSINESS\n- Explain services/products.\n- Answer inquiries professionally.\n- Collect customer info if interested.\n"
         else:
-            # Fallback for unknown industry
-            system_text += "\nNOTE: Industry Not Identified. Politely ask the user what services they are looking for, then proceed.\n"
+            system_text += "\nINDUSTRY: GENERAL\n- Provide helpful information about products/services.\n- Answer questions based on the details provided below.\n"
 
         if profile.get('description'):
-            system_text += f"About: {profile.get('description')}.\n"
+            system_text += f"\nAbout {business_name}: {profile.get('description')}.\n"
             
         if profile.get('services'):
-            system_text += f"\nServices Offered:\n{profile.get('services')}\n"
+            system_text += f"\nServices Offered by {business_name}:\n{profile.get('services')}\n"
             
         if profile.get('tone'):
-            system_text += f"\nReview your Tone: You must be {profile.get('tone')}.\n"
+            system_text += f"\nCommunication Tone: Use a {profile.get('tone')} tone in all messages.\n"
             
         if profile.get('hours'):
              system_text += f"\nOperating Hours: {profile.get('hours')}\n"
@@ -135,11 +133,11 @@ class PromptService:
              system_text += f"Location: {profile.get('location')}\n"
              
         if profile.get('faq'):
-            system_text += f"\nFrequently Asked Questions:\n{profile.get('faq')}\n"
+            system_text += f"\nFrequently Asked Questions (FAQ):\n{profile.get('faq')}\n"
 
         # Custom Rules (if any)
         if profile.get('custom_instructions'):
-             system_text += f"\nIMPORTANT RULES:\n{profile.get('custom_instructions')}\n"
+             system_text += f"\nSTRICT CUSTOM RULES:\n{profile.get('custom_instructions')}\n"
 
         # Learned Insights (from Training)
         if profile.get('learned_insights'):
