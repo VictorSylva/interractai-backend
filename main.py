@@ -15,6 +15,7 @@ else:
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 import os
 import logging
 
@@ -89,7 +90,14 @@ async def startup_event():
         try:
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
-            logger.info("Database connection established and tables created.")
+                # One-time patches for existing tables (PostgreSQL specific)
+                await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token VARCHAR"))
+                await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expiry TIMESTAMP"))
+                await conn.execute(text("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS plan_name VARCHAR DEFAULT 'starter'"))
+                await conn.execute(text("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS trial_start_at TIMESTAMP"))
+                await conn.execute(text("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS trial_end_at TIMESTAMP"))
+                
+            logger.info("Database connection established and tables updated.")
             break
         except Exception as e:
             if attempt < max_retries - 1:
