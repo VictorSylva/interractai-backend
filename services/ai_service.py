@@ -54,8 +54,18 @@ async def generate_response(user_message: str, conversation_history: list = None
     try:
         logger.info(f"[AI] Calling {MODEL_NAME} for user {user_id}...")
         async with httpx.AsyncClient() as client:
-            response = await client.post(API_URL, headers=headers, json=payload, timeout=15.0)
-            response.raise_for_status()
+            response = await client.post(API_URL, headers=headers, json=payload, timeout=20.0) # Increased timeout
+            
+            if response.status_code != 200:
+                logger.error(f"AI Service Error ({response.status_code}): {response.text}")
+                if response.status_code == 401:
+                    return "AI Service Error: Unauthorized. Please check your OPENROUTER_API_KEY."
+                if response.status_code == 402:
+                    return "AI Service Error: Insufficient credits on OpenRouter."
+                if response.status_code == 429:
+                    return "AI Service is busy. Please try again in a few seconds."
+                response.raise_for_status()
+
             data = response.json()
             
             if 'choices' in data and len(data['choices']) > 0:
@@ -75,8 +85,11 @@ async def generate_response(user_message: str, conversation_history: list = None
                 return "I'm having trouble processing that right now."
                 
     except httpx.TimeoutException:
-        logger.error(f"AI Service timeout after 15s")
-        return "I'm taking too long to respond. Please try again."
+        logger.error(f"AI Service timeout after 20s")
+        return "The AI service is taking too long to respond. DeepSeek might be overloaded. Please try again."
+    except httpx.HTTPStatusError as e:
+        logger.error(f"AI Service HTTP Error: {e}")
+        return "I'm having trouble connecting to the AI provider. Please try again later."
     except Exception as e:
-        logger.error(f"Error calling AI Provider: {e}")
+        logger.error(f"Unexpected error calling AI Provider: {type(e).__name__}: {e}")
         return f"I'm having trouble connecting to my AI service. Please try again in a moment."
