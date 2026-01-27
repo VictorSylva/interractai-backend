@@ -17,7 +17,10 @@ async def resolve_business_id(input_id: str) -> str:
     Resolves an email or potential email-based ID to the internal Business UUID.
     If input_id is not an email or user not found, returns input_id itself.
     """
-    if not input_id or "@" not in input_id:
+    if not input_id:
+        return input_id
+        
+    if "@" not in input_id:
         return input_id
         
     async with AsyncSessionLocal() as session:
@@ -26,7 +29,9 @@ async def resolve_business_id(input_id: str) -> str:
             result = await session.execute(stmt)
             user = result.scalar_one_or_none()
             if user and user.business_id:
+                logger.info(f"Resolved email {input_id} to BID {user.business_id}")
                 return user.business_id
+            logger.warning(f"Could not resolve email {input_id} to a business_id")
         except Exception as e:
             logger.error(f"Error resolving business_id: {e}")
             
@@ -336,36 +341,53 @@ async def get_business_status(business_id: str):
 async def update_business_profile(business_id: str, data: dict):
     async with AsyncSessionLocal() as session:
         try:
+            logger.info(f"Updating profile for BID: {business_id} | Data keys: {list(data.keys())}")
+            
             # 1. Update Business Name in 'businesses' table
-            if 'name' in data:
+            # Safely pop 'name' regardless of whether business is found
+            name_to_update = data.pop('name', None)
+            if name_to_update:
                 business_stmt = select(Business).where(Business.id == business_id)
                 business_result = await session.execute(business_stmt)
                 business = business_result.scalar_one_or_none()
                 if business:
-                    business.name = data.pop('name')
+                    business.name = name_to_update
+                    logger.info(f"Updated business name to: {name_to_update}")
+                else:
+                    logger.warning(f"Business record not found for ID: {business_id} (cannot update name)")
             
             # 2. Update/Create Settings in 'business_settings' table
             stmt = select(BusinessSettings).where(BusinessSettings.business_id == business_id)
             result = await session.execute(stmt)
             settings = result.scalar_one_or_none()
             
-            data.pop('updated_at', None) # handle auto
-            data.pop('id', None) # safety
-            data.pop('business_id', None) # safety
+            # Cleanup data to only include valid columns for BusinessSettings
+            data.pop('updated_at', None)
+            data.pop('id', None)
+            data.pop('business_id', None)
+            data.pop('status', None)
+            data.pop('plan_name', None)
+            
+            # Valid columns from table
+            valid_cols = {c.name for c in BusinessSettings.__table__.columns}
+            safe_data = {k: v for k, v in data.items() if k in valid_cols}
             
             if settings:
-                for k, v in data.items():
-                    if hasattr(settings, k):
-                        setattr(settings, k, v)
+                for k, v in safe_data.items():
+                    setattr(settings, k, v)
                 settings.updated_at = datetime.utcnow()
+                logger.info(f"Updated existing settings for BID: {business_id}")
             else:
-                settings = BusinessSettings(business_id=business_id, **data)
+                settings = BusinessSettings(business_id=business_id, **safe_data)
                 session.add(settings)
+                logger.info(f"Created new settings for BID: {business_id}")
             
             await session.commit()
             return data
         except Exception as e:
             logger.error(f"Error updating profile: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             await session.rollback()
             return None
 
