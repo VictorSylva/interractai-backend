@@ -55,13 +55,14 @@ app = FastAPI(title="Interact API", description="Backend for Interact AI Automat
 # CORS Setup
 origins = [
     "http://localhost:3000",
-    "https://interact-demo.web.app", 
-    "*"
+    "https://interac-ai.web.app",
+    "https://interac-ai.firebaseapp.com",
+    "https://interact-demo.web.app"
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex='.*', # Allow all origins for dev
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -165,11 +166,14 @@ async def register_endpoint(body: RegisterRequest):
 
 @app.post("/api/auth/login")
 async def login_endpoint(body: LoginRequest):
-    session = await get_db().__anext__()
     try:
+        session = await get_db().__anext__()
         user = await authenticate_user(session, body.email, body.password)
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        raise HTTPException(status_code=500, detail="Database connection error. Please check backend logs.")
     
     if not user:
          raise HTTPException(status_code=401, detail="Invalid credentials")
