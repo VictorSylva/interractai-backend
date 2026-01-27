@@ -42,14 +42,17 @@ async def resolve_business_id(input_id: str) -> str:
 async def store_message(business_id: str, user_id: str, text: str, sender: str, platform: str = "web", intent: str = None, sentiment: str = None):
     async with AsyncSessionLocal() as session:
         try:
+            # Composite ID to prevent collisions across different businesses for same web_user
+            convo_id = f"{business_id}:{user_id}"
+            
             # 1. Ensure Conversation Exists
-            stmt = select(Conversation).where(Conversation.id == user_id, Conversation.business_id == business_id)
+            stmt = select(Conversation).where(Conversation.id == convo_id)
             result = await session.execute(stmt)
             conversation = result.scalar_one_or_none()
             
             if not conversation:
                 conversation = Conversation(
-                    id=user_id,
+                    id=convo_id,
                     business_id=business_id,
                     platform=platform,
                     customer_name=user_id # Default
@@ -59,7 +62,7 @@ async def store_message(business_id: str, user_id: str, text: str, sender: str, 
             # 2. Add Message
             new_msg = Message(
                 business_id=business_id,
-                conversation_id=user_id,
+                conversation_id=convo_id,
                 text=text,
                 sender=sender, # customer, agent, bot
                 platform=platform,
@@ -87,6 +90,7 @@ async def store_message(business_id: str, user_id: str, text: str, sender: str, 
             if sentiment: conversation.last_sentiment = sentiment
             
             await session.commit()
+            logger.info(f"Stored message for {convo_id}")
         except Exception as e:
             logger.error(f"Error storing message: {e}")
             await session.rollback()
@@ -226,15 +230,20 @@ async def get_analytics_summary(business_id: str, days: int = 30):
 async def get_chat_history(business_id: str, user_id: str, limit: int = 10):
     async with AsyncSessionLocal() as session:
         try:
+            # Handle both simple visitor ID and composite ID
+            if ":" in user_id and user_id.startswith(business_id):
+                convo_id = user_id
+            else:
+                convo_id = f"{business_id}:{user_id}"
+
             stmt = select(Message).where(
                 Message.business_id == business_id,
-                Message.conversation_id == user_id
+                Message.conversation_id == convo_id
             ).order_by(desc(Message.timestamp)).limit(limit)
             
             result = await session.execute(stmt)
             messages = result.scalars().all()
             
-            # Return dicts to match old API
             return [{
                 "text": m.text,
                 "sender": m.sender,
@@ -242,9 +251,9 @@ async def get_chat_history(business_id: str, user_id: str, limit: int = 10):
                 "platform": m.platform,
                 "intent": m.intent,
                 "sentiment": m.sentiment
-            } for m in messages][::-1] # Reverse to chronological
+            } for m in messages][::-1] 
         except Exception as e:
-            logger.error(f"Error getting history: {e}")
+            logger.error(f"Error getting history for {business_id}:{user_id}: {e}")
             return []
 
 async def get_recent_conversations(business_id: str, limit: int = 20):
@@ -258,7 +267,8 @@ async def get_recent_conversations(business_id: str, limit: int = 20):
             convos = result.scalars().all()
             
             return [{
-                "id": c.id,
+                # Return the second part (visitor_id) to the frontend for cleaner display
+                "id": c.id.split(":", 1)[1] if ":" in c.id else c.id,
                 "lastMessage": c.last_message,
                 "lastTimestamp": c.last_timestamp,
                 "unread": c.unread_count,
@@ -273,9 +283,9 @@ async def get_recent_conversations(business_id: str, limit: int = 20):
 async def update_conversation_stats(business_id: str, user_id: str, intent: str, sentiment: str):
     async with AsyncSessionLocal() as session:
         try:
+            convo_id = f"{business_id}:{user_id}"
             stmt = update(Conversation).where(
-                Conversation.id == user_id, 
-                Conversation.business_id == business_id
+                Conversation.id == convo_id
             ).values(
                 last_intent=intent,
                 last_sentiment=sentiment
@@ -283,7 +293,7 @@ async def update_conversation_stats(business_id: str, user_id: str, intent: str,
             await session.execute(stmt)
             await session.commit()
         except Exception as e:
-            logger.error(f"Error updating stats: {e}")
+            logger.error(f"Error updating stats for {convo_id}: {e}")
 
 async def get_conversation_messages(business_id: str, user_id: str, limit: int = 50):
     return await get_chat_history(business_id, user_id, limit)

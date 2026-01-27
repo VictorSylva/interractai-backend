@@ -424,6 +424,9 @@ async def web_chat(body: WebMessage):
                     lead_data["phone"] = contact
                 del lead_data["contact"]
 
+            # Inject matching conversation_id for CRM linking (Composite ID)
+            lead_data["conversation_id"] = f"{real_business_id}:{body.user_id}"
+            
             await save_lead(real_business_id, lead_data)
             ai_reply = ai_reply.replace(lead_match.group(0), "").strip()
         except Exception as e:
