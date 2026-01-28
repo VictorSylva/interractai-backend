@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-from sqlalchemy import select, update, delete, desc
+from sqlalchemy import select, update, delete, desc, or_
 from sqlalchemy.orm import selectinload
 from database.session import AsyncSessionLocal
 from database.models.chat import Conversation, Message
@@ -15,12 +15,9 @@ logger = logging.getLogger(__name__)
 async def resolve_business_id(input_id: str) -> str:
     """
     Resolves an email or potential email-based ID to the internal Business UUID.
-    If input_id is not an email or user not found, returns input_id itself.
+    If input_id is already a UUID or no user found, returns input_id itself.
     """
-    if not input_id:
-        return input_id
-        
-    if "@" not in input_id:
+    if not input_id or "@" not in input_id:
         return input_id
         
     async with AsyncSessionLocal() as session:
@@ -36,6 +33,25 @@ async def resolve_business_id(input_id: str) -> str:
             logger.error(f"Error resolving business_id: {e}")
             
     return input_id
+
+async def get_all_possible_business_ids(business_id: str) -> list:
+    """Returns a list of all IDs that could refer to this business (Email + UUID)."""
+    ids = [business_id]
+    async with AsyncSessionLocal() as session:
+        try:
+            if "@" in business_id:
+                stmt = select(User).where(User.email == business_id)
+                user = (await session.execute(stmt)).scalar_one_or_none()
+                if user and user.business_id:
+                    ids.append(user.business_id)
+            else:
+                stmt = select(User).where(User.business_id == business_id)
+                user = (await session.execute(stmt)).scalar_one_or_none()
+                if user:
+                    ids.append(user.email)
+        except Exception as e:
+            logger.error(f"Error getting possible IDs: {e}")
+    return list(set(ids))
 
 # --- Chat & Analytics ---
 
@@ -106,16 +122,18 @@ async def get_analytics_summary(business_id: str, days: int = 30):
             start_date = now - timedelta(days=days)
 
             # 1. Base Data Fetching
+            possible_ids = await get_all_possible_business_ids(business_id)
+            
             # Conversations
-            convo_res = await session.execute(select(Conversation).where(Conversation.business_id == business_id))
+            convo_res = await session.execute(select(Conversation).where(Conversation.business_id.in_(possible_ids)))
             conversations = convo_res.scalars().all()
             
-            # Messages (Filtered by date for volume trends, but all time for some metrics)
-            msg_res = await session.execute(select(Message).where(Message.business_id == business_id))
+            # Messages
+            msg_res = await session.execute(select(Message).where(Message.business_id.in_(possible_ids)))
             all_messages = msg_res.scalars().all()
             
             # Leads
-            lead_res = await session.execute(select(Lead).where(Lead.business_id == business_id))
+            lead_res = await session.execute(select(Lead).where(Lead.business_id.in_(possible_ids)))
             leads = lead_res.scalars().all()
 
             # 2. Key Metrics Aggregation
@@ -230,15 +248,15 @@ async def get_analytics_summary(business_id: str, days: int = 30):
 async def get_chat_history(business_id: str, user_id: str, limit: int = 10):
     async with AsyncSessionLocal() as session:
         try:
-            # Handle both simple visitor ID and composite ID
-            if ":" in user_id and user_id.startswith(business_id):
-                convo_id = user_id
-            else:
-                convo_id = f"{business_id}:{user_id}"
-
+            # Multi-format ID check to bridge old/new data
+            possible_bids = await get_all_possible_business_ids(business_id)
+            possible_convo_ids = [user_id]
+            for bid in possible_bids:
+                possible_convo_ids.append(f"{bid}:{user_id}")
+            
             stmt = select(Message).where(
-                Message.business_id == business_id,
-                Message.conversation_id == convo_id
+                Message.business_id.in_(possible_bids),
+                Message.conversation_id.in_(possible_convo_ids)
             ).order_by(desc(Message.timestamp)).limit(limit)
             
             result = await session.execute(stmt)
@@ -259,15 +277,16 @@ async def get_chat_history(business_id: str, user_id: str, limit: int = 10):
 async def get_recent_conversations(business_id: str, limit: int = 20):
     async with AsyncSessionLocal() as session:
         try:
+            possible_bids = await get_all_possible_business_ids(business_id)
             stmt = select(Conversation).where(
-                Conversation.business_id == business_id
+                Conversation.business_id.in_(possible_bids)
             ).order_by(desc(Conversation.last_timestamp)).limit(limit)
             
             result = await session.execute(stmt)
             convos = result.scalars().all()
             
             return [{
-                # Return the second part (visitor_id) to the frontend for cleaner display
+                # Return the second part (visitor_id) if it's a composite ID
                 "id": c.id.split(":", 1)[1] if ":" in c.id else c.id,
                 "lastMessage": c.last_message,
                 "lastTimestamp": c.last_timestamp,
@@ -472,7 +491,8 @@ async def get_leads(business_id: str):
     from services.crm_intelligence import crm_intelligence
     async with AsyncSessionLocal() as session:
         try:
-            stmt = select(Lead).where(Lead.business_id == business_id).order_by(desc(Lead.created_at))
+            possible_bids = await get_all_possible_business_ids(business_id)
+            stmt = select(Lead).where(Lead.business_id.in_(possible_bids)).order_by(desc(Lead.created_at))
             result = await session.execute(stmt)
             leads = result.scalars().all()
             

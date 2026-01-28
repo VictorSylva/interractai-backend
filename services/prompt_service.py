@@ -14,15 +14,9 @@ class PromptService:
         self.intents = self._load_json("intents.json")
         
         self.industry_templates = {
-            "real_estate": "\nINDUSTRY: REAL ESTATE\n- Show available units.\n- Ask for budget, location, rooms.\n- Offer inspection.\n",
-            "healthcare": "\nINDUSTRY: HEALTHCARE / CLINIC\n- Show service availability.\n- Offer appointment slots.\n- Collect patient details.\n",
-            "restaurant": "\nINDUSTRY: RESTAURANT\n- Show menu if asked.\n- Confirm delivery areas.\n- Collect order & customer info.\n",
-            "beauty": "\nINDUSTRY: BEAUTY SALON / SPA\n- Share prices.\n- Ask preferred style & date.\n- Book appointment.\n",
-            "retail": "\nINDUSTRY: SUPERMARKET / RETAIL\n- Confirm stock availability.\n- Reserve items.\n- Collect customer info.\n",
-            "logistics": "\nINDUSTRY: LOGISTICS / DELIVERY\n- Ask weight, pickup, destination.\n- Generate price estimate.\n- Book delivery.\n",
-            "education": "\nINDUSTRY: SCHOOL / TRAINING\n- Share course details.\n- Ask preferred session.\n- Collect name & WhatsApp.\n",
-            "consulting": "\nINDUSTRY: CONSULTING / SERVICES\n- Explain services.\n- Book consultation.\n",
-            "ngo": "\nINDUSTRY: NGO / COMMUNITY\n- Explain mission.\n- Accept donations or volunteer signups.\n"
+            "ngo": "\nINDUSTRY: NGO / COMMUNITY\n- Explain mission.\n- Accept donations or volunteer signups.\n",
+            "construction": "\nINDUSTRY: CONSTRUCTION\n- Discuss remodeling, building, or repairs.\n- Ask for site address and project scope.\n- Offer a site survey.\n",
+            "painting": "\nINDUSTRY: PAINTING\n- Discuss interior or exterior painting.\n- Ask for square footage or room count.\n- Ask for color preferences.\n"
         }
     
     def _load_file(self, filename):
@@ -156,12 +150,13 @@ class PromptService:
 \n*** UNIVERSAL RESPONSE STYLE ***
 - Friendly, professional, and concise.
 - Simple explanations; do not overwhelm.
-- STRICT RULE: Always end with a follow-up qualification question to move the conversation forward.
+- INTELLIGENT QUALIFYING: If the user has already provided a detail (e.g. they said "red paint"), do NOT ask for it again.
+- ONE AT A TIME: Only ask ONE follow-up question per message to keep it conversational.
 - Only provide info that is explicitly in the profile or FAQs. If unsure, ask for clarification.
 
 *** UNIVERSAL LEAD ENGINE ***
-1. Understand the Request -> Answer constraints/availability.
-2. Qualify -> Ask for specifics (date, size, style, location).
+1. Acknowledge -> Confirm you understood their specific request.
+2. Qualify -> Ask for ONE missing detail (e.g. date, size, OR location).
 3. Convert -> Propose the booking/order/visit.
 4. Capture -> Ask for Name and Contact to confirm.
 """

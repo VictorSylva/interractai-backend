@@ -323,7 +323,7 @@ async def train_business_ai(business_id: str):
 
 @app.post("/api/web-chat")
 async def web_chat(body: WebMessage):
-    from services.db_service import resolve_business_id
+    from services.db_service import resolve_business_id, get_chat_history
     profile_id = await resolve_business_id(body.business_id)
     # real_business_id is now consistently the UUID if user found
     real_business_id = profile_id 
@@ -340,15 +340,22 @@ async def web_chat(body: WebMessage):
         logger.warning(f"[WebChat] Blocked access for {real_business_id} (expired/suspended)")
         return {"reply": "Your trial has ended. Please upgrade your plan to continue using InteracAI.", "status": "blocked"}
 
-    # 1. Store User Message
+    # 1. Fetch Chat History BEFORE storing new message (Clean Context)
+    raw_history = await get_chat_history(real_business_id, body.user_id, limit=5)
+    formatted_history = []
+    for msg in raw_history:
+        role = "user" if msg['sender'] == 'customer' else "assistant"
+        formatted_history.append({"role": role, "content": msg['text']})
+
+    # 2. Store User Message
     await store_message(real_business_id, body.user_id, body.message, "customer", platform="web")
     
-    # 2. Detect Intent & Sentiment (Prompt Service)
+    # 3. Detect Intent & Sentiment (Prompt Service)
     from services.prompt_service import prompt_service
     detected_intent = prompt_service.detect_intent(body.message)
     sentiment = prompt_service.analyze_sentiment(body.message) # Assume this exists or mock it
     
-    # 3. Check Workflow Automations
+    # 4. Check Workflow Automations
     # Trigger event data
     trigger_data = {
         "message": body.message,
@@ -369,22 +376,12 @@ async def web_chat(body: WebMessage):
     
     logger.info(f"[Chat] Response Arbitration: No workflow matched. Proceeding with Default AI.")
     
-    # 4. Dynamic AI Response (Standard Chatbot)
     profile = await get_business_profile(profile_id)
-    # insights = await get_learned_insights(profile_id) 
-    # profile['learned_insights'] = insights 
-    
     knowledge_docs = await get_knowledge_documents(profile_id)
     if knowledge_docs:
         profile['knowledge_docs'] = knowledge_docs
 
     system_instruction = prompt_service.build_system_prompt(profile)
-
-    raw_history = await get_chat_history(real_business_id, body.user_id, limit=5)
-    formatted_history = []
-    for msg in raw_history:
-        role = "user" if msg['sender'] == 'customer' else "assistant"
-        formatted_history.append({"role": role, "content": msg['text']})
     
     ai_reply = await generate_response(
         body.message, 
