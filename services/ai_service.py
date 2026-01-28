@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL_NAME = "deepseek/deepseek-chat"
+MODEL_NAME = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat")
     
 if not OPENROUTER_API_KEY:
     logger.error("OPENROUTER_API_KEY is not set. AI Service will fail.")
