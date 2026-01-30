@@ -6,12 +6,12 @@ ENV = os.getenv("ENV", "production")
 if ENV == "dev":
     env_file = ".env.dev"
     if os.path.exists(env_file):
-        load_dotenv(env_file)
+        load_dotenv(env_file, override=True)
         print(f"Loaded configuration from {env_file}")
     else:
         print(f"Warning: ENV=dev but {env_file} not found")
 else:
-    load_dotenv() # Production fallbacks
+    load_dotenv(override=True) # Production fallbacks
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
