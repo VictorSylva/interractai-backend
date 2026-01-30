@@ -70,9 +70,11 @@ async def generate_response(user_message: str, conversation_history: list = None
         return "The AI service is taking too long to respond. Please try again."
     except httpx.HTTPStatusError as e:
         logger.error(f"AI Service HTTP Error: {e}")
+        logger.error(f"Response content: {e.response.text if hasattr(e, 'response') else 'N/A'}")
         return "I'm having trouble connecting to the AI provider. Please try again later."
     except Exception as e:
         logger.error(f"Unexpected error calling AI Provider: {type(e).__name__}: {e}")
+        logger.exception("Full traceback:")
         return f"I'm having trouble connecting to my AI service. Please try again in a moment."
 
 
@@ -102,6 +104,9 @@ async def _call_gemini(messages: list) -> str:
     
     if system_instruction:
         payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+    
+    logger.info(f"[Gemini] Calling API with URL: {url[:80]}...")
+    logger.info(f"[Gemini] Payload keys: {list(payload.keys())}")
     
     async with httpx.AsyncClient() as client:
         response = await client.post(url, json=payload, timeout=20.0)
