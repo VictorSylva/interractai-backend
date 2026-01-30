@@ -1,53 +1,52 @@
-import os
 import asyncio
+import os
 import httpx
+from dotenv import load_dotenv
 
-KEYS = {
-    ".env": "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",
-    ".env.dev": "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"
-}
-
-API_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-async def test_key(name, key):
-    print(f"Testing key from {name}...")
+async def test_key(api_key, model):
+    print("-" * 50)
+    print(f"Testing Key: {api_key[:15]}...")
+    
+    url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {key}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://test.com", 
-    }
-    payload = {
-        "model": "deepseek/deepseek-chat",
-        "messages": [{"role": "user", "content": "hi"}],
-        "max_tokens": 5
+        "HTTP-Referer": "https://interact.com",
+        "X-Title": "Interact AI Platform",
     }
     
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(API_URL, headers=headers, json=payload, timeout=10.0)
-            if response.status_code == 200:
-                print(f"PASS: Key from {name} is VALID.")
-                return key
-            else:
-                print(f"FAIL: Key from {name} failed: {response.status_code}")
-                return None
-    except Exception as e:
-        print(f"FAIL: Error testing {name}: {e}")
-        return None
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "hi"}],
+        "temperature": 0.7,
+        "max_tokens": 10
+    }
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(url, headers=headers, json=payload, timeout=20.0)
+            print(f"Status Code: {response.status_code}")
+            print(f"Response Body: {response.text}")
+            return response.status_code == 200
+        except Exception as e:
+            print(f"Error: {e}")
+            return False
 
 async def main():
-    print("Starting Key Verification...")
-    valid_key = None
+    model = "google/gemini-2.0-flash-exp:free"
     
-    for name, key in KEYS.items():
-        result = await test_key(name, key)
-        if result:
-            valid_key = result
-            
-    if valid_key:
-        print(f"Found Valid Key: {valid_key[:10]}...")
+    keys = [
+        "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",
+        "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",
+        "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"
+    ]
+    
+    for key in keys:
+        if await test_key(key, model):
+            print(f"\n✅ FOUND WORKING KEY: {key}")
+            break
     else:
-        print("All keys failed.")
+        print("\n❌ No working keys found in history.")
 
 if __name__ == "__main__":
     asyncio.run(main())
