@@ -77,6 +77,46 @@ def read_root():
 def health_check():
     return {"status": "healthy"}
 
+@app.get("/api/debug/business-id")
+async def debug_business_id(business_id: str):
+    """Diagnostic endpoint to check ID resolution and data counts for a business."""
+    from services.db_service import resolve_business_id, get_all_possible_business_ids
+    from database.session import AsyncSessionLocal
+    from database.models.chat import Conversation, Message
+    from database.models.crm import Lead
+    from database.models.general import KnowledgeDoc
+    from sqlalchemy import select, func
+    
+    resolved_id = await resolve_business_id(business_id)
+    possible_ids = await get_all_possible_business_ids(business_id)
+    
+    results = {
+        "input_id": business_id,
+        "resolved_uuid": resolved_id,
+        "all_mapped_ids": possible_ids,
+        "counts": {}
+    }
+    
+    async with AsyncSessionLocal() as session:
+        for bid in possible_ids:
+            # Leads
+            lead_count = (await session.execute(select(func.count(Lead.id)).where(Lead.business_id == bid))).scalar()
+            # Conversations
+            convo_count = (await session.execute(select(func.count(Conversation.id)).where(Conversation.business_id == bid))).scalar()
+            # Messages
+            msg_count = (await session.execute(select(func.count(Message.id)).where(Message.business_id == bid))).scalar()
+            # Docs
+            doc_count = (await session.execute(select(func.count(KnowledgeDoc.id)).where(KnowledgeDoc.business_id == bid))).scalar()
+            
+            results["counts"][bid] = {
+                "leads": lead_count,
+                "conversations": convo_count,
+                "messages": msg_count,
+                "knowledge_docs": doc_count
+            }
+            
+    return results
+
 @app.on_event("startup")
 async def startup_event():
     # Auto-create tables for MVP (replaces manually running alembic revision for now)

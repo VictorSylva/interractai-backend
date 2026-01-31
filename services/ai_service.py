@@ -159,10 +159,15 @@ async def _call_openrouter(messages: list) -> str:
     """Internal helper to call OpenRouter API with mandatory headers"""
     url = "https://openrouter.ai/api/v1/chat/completions"
     
-    # FAIL FAST if mandatory headers are missing
-    if not OPENROUTER_REFERER or not OPENROUTER_TITLE:
-        AIServiceLogger.log_error("openrouter", "config_error", "Missing mandatory headers (Referer or Title)")
-        raise ValueError("OpenRouter requires HTTP-Referer and X-Title headers to be configured.")
+    # FAIL FAST if mandatory headers are missing or improperly configured
+    # OpenRouter strictly requires these to prevent key invalidation.
+    if not OPENROUTER_REFERER or str(OPENROUTER_REFERER).strip() in ["", "None", "undefined"]:
+        AIServiceLogger.log_error("openrouter", "config_error", f"Invalid OPENROUTER_REFERER: '{OPENROUTER_REFERER}'")
+        raise ValueError("OpenRouter requires a valid HTTP-Referer header. Check your environment variables.")
+
+    if not OPENROUTER_TITLE or str(OPENROUTER_TITLE).strip() in ["", "None", "undefined"]:
+        AIServiceLogger.log_error("openrouter", "config_error", f"Invalid OPENROUTER_TITLE: '{OPENROUTER_TITLE}'")
+        raise ValueError("OpenRouter requires a valid X-Title header. Check your environment variables.")
 
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",

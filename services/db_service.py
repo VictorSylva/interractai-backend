@@ -41,16 +41,19 @@ async def get_all_possible_business_ids(business_id: str) -> list:
         try:
             if "@" in business_id:
                 stmt = select(User).where(User.email == business_id)
-                user = (await session.execute(stmt)).scalar_one_or_none()
+                result = await session.execute(stmt)
+                user = result.scalar_one_or_none()
                 if user and user.business_id:
                     ids.append(user.business_id)
             else:
                 stmt = select(User).where(User.business_id == business_id)
-                user = (await session.execute(stmt)).scalar_one_or_none()
-                if user:
-                    ids.append(user.email)
+                result = await session.execute(stmt)
+                users = result.scalars().all()
+                for u in users:
+                    if u.email:
+                        ids.append(u.email)
         except Exception as e:
-            logger.error(f"Error getting possible IDs: {e}")
+            logger.error(f"Error getting possible IDs for {business_id}: {e}")
     return list(set(ids))
 
 # --- Chat & Analytics ---
@@ -322,10 +325,13 @@ async def get_conversation_messages(business_id: str, user_id: str, limit: int =
 async def get_business_profile(business_id: str):
     async with AsyncSessionLocal() as session:
         try:
+            # Multi-format ID check to bridge old/new data
+            possible_bids = await get_all_possible_business_ids(business_id)
+            
             # Join with Business table to get the name
             stmt = select(Business, BusinessSettings).join(
                 BusinessSettings, Business.id == BusinessSettings.business_id, isouter=True
-            ).where(Business.id == business_id)
+            ).where(Business.id.in_(possible_bids))
             
             result = await session.execute(stmt)
             row = result.first()
@@ -345,7 +351,7 @@ async def get_business_profile(business_id: str):
             
             return profile
         except Exception as e:
-            logger.error(f"Error fetching profile: {e}")
+            logger.error(f"Error fetching profile for {business_id}: {e}")
             return {}
             
 async def get_business_status(business_id: str):
@@ -431,7 +437,8 @@ async def get_learned_insights(business_id: str):
 async def get_knowledge_documents(business_id: str):
     async with AsyncSessionLocal() as session:
         try:
-            stmt = select(KnowledgeDoc).where(KnowledgeDoc.business_id == business_id)
+            possible_bids = await get_all_possible_business_ids(business_id)
+            stmt = select(KnowledgeDoc).where(KnowledgeDoc.business_id.in_(possible_bids))
             result = await session.execute(stmt)
             docs = result.scalars().all()
             return [{
@@ -441,7 +448,7 @@ async def get_knowledge_documents(business_id: str):
                 "content": d.content
             } for d in docs]
         except Exception as e:
-            logger.error(f"Error getting docs: {e}")
+            logger.error(f"Error getting docs for {business_id}: {e}")
             return []
 
 async def add_knowledge_document(business_id: str, doc_data: dict):
