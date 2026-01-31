@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 # Provider Keys
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat")
+# OpenRouter strictly requires Referer and Title headers to prevent key invalidation.
 OPENROUTER_REFERER = os.getenv("OPENROUTER_REFERER", "https://interact-ai.com")
 OPENROUTER_TITLE = os.getenv("OPENROUTER_TITLE", "Interact AI Platform")
 
@@ -161,11 +162,16 @@ async def _call_openrouter(messages: list) -> str:
     
     # FAIL FAST if mandatory headers are missing or improperly configured
     # OpenRouter strictly requires these to prevent key invalidation.
-    if not OPENROUTER_REFERER or str(OPENROUTER_REFERER).strip() in ["", "None", "undefined"]:
+    valid_referer = OPENROUTER_REFERER and str(OPENROUTER_REFERER).strip() not in ["", "None", "undefined", "https://interact-ai.com"] # Force real referer in prod
+    # Actually, let's just ensure it's not empty or "undefined"
+    clean_referer = str(OPENROUTER_REFERER).strip()
+    clean_title = str(OPENROUTER_TITLE).strip()
+
+    if not clean_referer or clean_referer in ["None", "undefined"]:
         AIServiceLogger.log_error("openrouter", "config_error", f"Invalid OPENROUTER_REFERER: '{OPENROUTER_REFERER}'")
         raise ValueError("OpenRouter requires a valid HTTP-Referer header. Check your environment variables.")
 
-    if not OPENROUTER_TITLE or str(OPENROUTER_TITLE).strip() in ["", "None", "undefined"]:
+    if not clean_title or clean_title in ["None", "undefined"]:
         AIServiceLogger.log_error("openrouter", "config_error", f"Invalid OPENROUTER_TITLE: '{OPENROUTER_TITLE}'")
         raise ValueError("OpenRouter requires a valid X-Title header. Check your environment variables.")
 
